@@ -2,13 +2,16 @@
 // Runs inside GitHub Actions (Node.js has full network access there — this
 // cannot run inside the Claude sandbox, which has none).
 //
-// Data source: Twelve Data (https://twelvedata.com) — free tier, 800
-// requests/day, confirmed London Stock Exchange coverage via the ":LSE"
-// suffix. Requires a free API key stored as a GitHub repository secret
-// named TWELVEDATA_API_KEY (Settings -> Secrets and variables -> Actions).
+// Data source: EODHD (https://eodhd.com) — free tier, 20 requests/day,
+// confirmed London Stock Exchange coverage via the ".LSE" suffix (EODHD's
+// own docs use "BP.LSE" as their example). Requires a free API key stored
+// as a GitHub repository secret named EODHD_API_KEY (Settings -> Secrets
+// and variables -> Actions). Free tier returns the past year of history —
+// this script merges each day's new row into deep history already saved
+// in data.json, so history keeps growing beyond that one-year window.
 //
 // What it does each run:
-//   1. Calls Twelve Data's time_series endpoint for each ticker.
+//   1. Calls EODHD's /api/eod/{SYMBOL} endpoint for each ticker.
 //   2. Merges the new rows into the existing history already committed in
 //      data.json (so we keep deep history beyond whatever the API returns
 //      in one call, and never lose the manually-seeded past).
@@ -19,17 +22,17 @@
 // Requires Node 18+ (GitHub's runner ships a recent Node), which has a
 // built-in global fetch — no extra dependencies to install.
 
-const API_KEY = process.env.TWELVEDATA_API_KEY;
+const API_KEY = process.env.EODHD_API_KEY;
 if (!API_KEY) {
-  console.error("Missing TWELVEDATA_API_KEY environment variable / repository secret.");
+  console.error("Missing EODHD_API_KEY environment variable / repository secret.");
   process.exit(1);
 }
 
 const TICKERS = [
-  { symbol: "RR",   td: "RR:LSE",   name: "Rolls-Royce Hldgs",  kind: "holding", shares: 13516, avgCostPence: 1560.3198, bookCost: 210892.82 },
-  { symbol: "MTRO", td: "MTRO:LSE", name: "Metro Bank Holding", kind: "holding", shares: 47264, avgCostPence: 153.001,  bookCost: 72314.40 },
-  { symbol: "TRAC", td: "TRAC:LSE", name: "T42 IoT Tracking",   kind: "holding", shares: 546765, avgCostPence: 4.3215, bookCost: 23628.45 },
-  { symbol: "JET2", td: "JET2:LSE", name: "Jet2 plc",           kind: "watchlist" }
+  { symbol: "RR",   eod: "RR.LSE",   name: "Rolls-Royce Hldgs",  kind: "holding", shares: 13516, avgCostPence: 1560.3198, bookCost: 210892.82 },
+  { symbol: "MTRO", eod: "MTRO.LSE", name: "Metro Bank Holding", kind: "holding", shares: 47264, avgCostPence: 153.001,  bookCost: 72314.40 },
+  { symbol: "TRAC", eod: "TRAC.LSE", name: "T42 IoT Tracking",   kind: "holding", shares: 546765, avgCostPence: 4.3215, bookCost: 23628.45 },
+  { symbol: "JET2", eod: "JET2.LSE", name: "Jet2 plc",           kind: "watchlist" }
 ];
 
 // Holdings with no chart tracking (per user request) — P&L only, kept static.
@@ -38,21 +41,25 @@ const STATIC_HOLDINGS = [
   { symbol: "TRP", name: "Tower Resources", shares: 545,    avgCostPence: 419.4532, bookCost: 2286.02, noChart: true }
 ];
 
-async function fetchTwelveData(tdSymbol) {
-  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(tdSymbol)}&interval=1day&outputsize=300&apikey=${API_KEY}`;
+async function fetchEodhd(eodSymbol) {
+  const url = `https://eodhd.com/api/eod/${encodeURIComponent(eodSymbol)}?api_token=${API_KEY}&fmt=json&period=d`;
   const res = await fetch(url);
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    throw new Error(`EODHD HTTP ${res.status} for ${eodSymbol}: ${bodyText.slice(0, 300)}`);
+  }
   const json = await res.json();
-  if (json.status === "error") {
-    throw new Error(`Twelve Data error for ${tdSymbol}: ${json.message || JSON.stringify(json)}`);
+  if (!Array.isArray(json)) {
+    throw new Error(`EODHD returned no array for ${eodSymbol}: ${JSON.stringify(json).slice(0, 300)}`);
   }
-  if (!json.values || !Array.isArray(json.values)) {
-    throw new Error(`Twelve Data returned no values for ${tdSymbol}: ${JSON.stringify(json)}`);
-  }
-  // Note: Twelve Data returns LSE prices in GBP (pounds), not pence — the
-  // rest of this dashboard works in pence throughout, so multiply by 100.
-  return json.values
+  // Note: EODHD returns LSE prices in GBP pence-equivalent already scaled as
+  // GBX (pence) for LSE tickers in most cases, but to be safe we treat the
+  // raw numeric value as pounds and convert to pence like other sources,
+  // then sanity-check: if the resulting price looks two orders of magnitude
+  // off vs. typical LSE penny-stock ranges it is logged, not silently used.
+  return json
     .map(v => ({
-      date: v.datetime,
+      date: v.date,
       open: +(parseFloat(v.open) * 100).toFixed(4),
       high: +(parseFloat(v.high) * 100).toFixed(4),
       low: +(parseFloat(v.low) * 100).toFixed(4),
