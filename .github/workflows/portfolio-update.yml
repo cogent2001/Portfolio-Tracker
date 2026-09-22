@@ -1,8 +1,18 @@
-name: Portfolio Data Update
+name: Update Portfolio Data
 
+# Two scheduled runs a day, both UTC (cron does not know about London's
+# clock changes — 17:00 UTC is 18:00 London during BST and 17:00 London
+# during GMT; adjust if that drift ever matters to you):
+#   1. ~17:00 UTC, weekdays — shortly after LSE close (16:30), to pick up
+#      the day's confirmed RR./MTRO./TRAC/JET2 closing prices.
+#   2. ~06:30 UTC, every day — after the US close and the main Asia
+#      session (Tokyo/Hong Kong) have both wrapped, refreshing headlines
+#      ahead of the EMEA open.
+# Also runnable manually anytime from the Actions tab.
 on:
   schedule:
     - cron: "0 17 * * 1-5"
+    - cron: "30 6 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -30,5 +40,5 @@ jobs:
           git config user.name "portfolio-tracker-bot"
           git config user.email "actions@users.noreply.github.com"
           git add data.json
-          git diff --quiet --cached || git commit -m "Daily data update: $(date -u +'%Y-%m-%d')"
+          git diff --quiet --cached || git commit -m "Daily data update: $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push
