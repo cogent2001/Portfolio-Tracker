@@ -308,17 +308,68 @@ async function main() {
     }
   }
 
+  // ---- News headlines (free RSS, no API key) ----
+  // Pulls raw headlines only — no synthesis or interpretation. The point is
+  // to surface today's real headlines so you know what to go read/search
+  // further, not to replace that reading with an automated "analysis".
+  const NEWS_FEEDS = [
+    { name: "BBC Business", url: "https://feeds.bbci.co.uk/news/business/rss.xml" },
+    { name: "Reuters (Thomson Reuters IR)", url: "https://ir.thomsonreuters.com/rss/news-releases.xml?items=15" }
+  ];
+
+  // Keywords used only to flag/sort items as relevant to this portfolio —
+  // nothing is filtered out entirely, so nothing potentially relevant is
+  // silently hidden. Irrelevant items are still returned, just not flagged.
+  const RELEVANCE_KEYWORDS = [
+    "iran", "middle east", "hormuz", "oil", "opec", "rolls-royce", "rolls royce",
+    "metro bank", "jet2", "aerospace", "defence", "defense", "bank of england",
+    "interest rate", "inflation", "ftse", "sanctions", "houthi", "gulf"
+  ];
+
+  function parseRss(xml, sourceName) {
+    const items = [];
+    const itemMatches = xml.match(/<item[\s\S]*?<\/item>/g) || [];
+    for (const raw of itemMatches.slice(0, 15)) {
+      const title = (raw.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || "";
+      const link = (raw.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || "";
+      const pubDate = (raw.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1] || "";
+      const cleanTitle = title.replace(/<!\[CDATA\[|\]\]>/g, "").trim();
+      const cleanLink = link.replace(/<!\[CDATA\[|\]\]>/g, "").trim();
+      if (!cleanTitle) continue;
+      const lower = cleanTitle.toLowerCase();
+      const relevant = RELEVANCE_KEYWORDS.some(kw => lower.includes(kw));
+      items.push({ source: sourceName, title: cleanTitle, link: cleanLink, pubDate, relevant });
+    }
+    return items;
+  }
+
+  let news = [];
+  for (const feed of NEWS_FEEDS) {
+    try {
+      console.log(`Fetching news feed: ${feed.name}...`);
+      const res = await fetch(feed.url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; PortfolioTrackerBot/1.0)" } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const xml = await res.text();
+      news = news.concat(parseRss(xml, feed.name));
+    } catch (e) {
+      console.warn(`News feed failed (${feed.name}): ${e.message} — continuing without it.`);
+    }
+  }
+  // Relevant items first, then by whatever order the feeds returned.
+  news.sort((a, b) => (b.relevant === a.relevant ? 0 : b.relevant ? 1 : -1));
+
   const bundle = {
     generatedAt: new Date().toISOString(),
     holdings: holdingsInput,
     watchlist: watchlistInput,
     dataset,
     analysis,
-    fullAnalysis
+    fullAnalysis,
+    news
   };
 
   await fs.writeFile("data.json", JSON.stringify(bundle));
-  console.log("Wrote data.json —", Object.keys(dataset).map(k => `${k}:${dataset[k].length}`).join(", "));
+  console.log("Wrote data.json —", Object.keys(dataset).map(k => `${k}:${dataset[k].length}`).join(", "), "· news items:", news.length);
 }
 
 main().catch(err => {
