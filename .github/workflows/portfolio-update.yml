@@ -22,7 +22,7 @@ jobs:
 
       - name: Fetch latest price data and rebuild data.json
         env:
-          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
         run: node fetch-data.js
 
       - name: Commit updated data.json
