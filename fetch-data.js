@@ -52,18 +52,18 @@ async function fetchEodhd(eodSymbol) {
   if (!Array.isArray(json)) {
     throw new Error(`EODHD returned no array for ${eodSymbol}: ${JSON.stringify(json).slice(0, 300)}`);
   }
-  // Note: EODHD returns LSE prices in GBP pence-equivalent already scaled as
-  // GBX (pence) for LSE tickers in most cases, but to be safe we treat the
-  // raw numeric value as pounds and convert to pence like other sources,
-  // then sanity-check: if the resulting price looks two orders of magnitude
-  // off vs. typical LSE penny-stock ranges it is logged, not silently used.
+  // EODHD returns LSE prices already in pence (GBX) — do NOT multiply by
+  // 100 again. (An earlier version of this script did, which produced
+  // prices ~100x too high once merged with correctly-scaled history —
+  // e.g. RR. showing ~18,460p instead of ~1,505p. Fixed here: use the
+  // raw value as-is.)
   return json
     .map(v => ({
       date: v.date,
-      open: +(parseFloat(v.open) * 100).toFixed(4),
-      high: +(parseFloat(v.high) * 100).toFixed(4),
-      low: +(parseFloat(v.low) * 100).toFixed(4),
-      close: +(parseFloat(v.close) * 100).toFixed(4),
+      open: +parseFloat(v.open).toFixed(4),
+      high: +parseFloat(v.high).toFixed(4),
+      low: +parseFloat(v.low).toFixed(4),
+      close: +parseFloat(v.close).toFixed(4),
       volume: parseInt(v.volume, 10) || 0
     }))
     .filter(r => r.date && !isNaN(r.close) && r.close > 0)
