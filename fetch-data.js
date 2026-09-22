@@ -273,8 +273,8 @@ async function main() {
   const fullAnalysis = {};
 
   for (const t of TICKERS) {
-    console.log(`Fetching ${t.symbol} (${t.td})...`);
-    const fresh = await fetchTwelveData(t.td);
+    console.log(`Fetching ${t.symbol} (${t.eod})...`);
+    const fresh = await fetchEodhd(t.eod);
     const merged = mergeSeries(existingDataset[t.symbol], fresh);
     dataset[t.symbol] = merged;
     analysis[t.symbol] = {
