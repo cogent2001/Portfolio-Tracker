@@ -2,59 +2,72 @@
 // Runs inside GitHub Actions (Node.js has full network access there — this
 // cannot run inside the Claude sandbox, which has none).
 //
-// What it does each run:
-//   1. Downloads the latest daily OHLCV history for each ticker from Stooq
-//      (free, no API key, no signup: https://stooq.com).
-//   2. Parses the CSV, keeps it as the canonical price history.
-//   3. Recomputes the same trend/volume/technical-analysis numbers the
-//      dashboard displays (mirrors the logic already built into the site).
-//   4. Writes data.json, which index.html loads at page-load time.
+// Data source: Twelve Data (https://twelvedata.com) — free tier, 800
+// requests/day, confirmed London Stock Exchange coverage via the ":LSE"
+// suffix. Requires a free API key stored as a GitHub repository secret
+// named TWELVEDATA_API_KEY (Settings -> Secrets and variables -> Actions).
 //
-// Requires Node 18+ (GitHub's ubuntu-latest runner ships a recent Node),
-// which has a built-in global fetch — no extra dependencies to install.
+// What it does each run:
+//   1. Calls Twelve Data's time_series endpoint for each ticker.
+//   2. Merges the new rows into the existing history already committed in
+//      data.json (so we keep deep history beyond whatever the API returns
+//      in one call, and never lose the manually-seeded past).
+//   3. Recomputes the same trend/volume/technical-analysis numbers the
+//      dashboard displays.
+//   4. Writes data.json, which index.html fetches at page-load time.
+//
+// Requires Node 18+ (GitHub's runner ships a recent Node), which has a
+// built-in global fetch — no extra dependencies to install.
+
+const API_KEY = process.env.TWELVEDATA_API_KEY;
+if (!API_KEY) {
+  console.error("Missing TWELVEDATA_API_KEY environment variable / repository secret.");
+  process.exit(1);
+}
 
 const TICKERS = [
-  { symbol: "RR",   stooq: "RR.UK",   name: "Rolls-Royce Hldgs",  kind: "holding", shares: 13516, avgCostPence: 1560.3198, bookCost: 210892.82 },
-  { symbol: "MTRO", stooq: "MTRO.UK", name: "Metro Bank Holding", kind: "holding", shares: 47264, avgCostPence: 153.001,  bookCost: 72314.40 },
-  { symbol: "TRAC", stooq: "TRAC.UK", name: "T42 IoT Tracking",   kind: "holding", shares: 546765, avgCostPence: 4.3215, bookCost: 23628.45 },
-  { symbol: "JET2", stooq: "JET2.UK", name: "Jet2 plc",           kind: "watchlist" }
+  { symbol: "RR",   td: "RR:LSE",   name: "Rolls-Royce Hldgs",  kind: "holding", shares: 13516, avgCostPence: 1560.3198, bookCost: 210892.82 },
+  { symbol: "MTRO", td: "MTRO:LSE", name: "Metro Bank Holding", kind: "holding", shares: 47264, avgCostPence: 153.001,  bookCost: 72314.40 },
+  { symbol: "TRAC", td: "TRAC:LSE", name: "T42 IoT Tracking",   kind: "holding", shares: 546765, avgCostPence: 4.3215, bookCost: 23628.45 },
+  { symbol: "JET2", td: "JET2:LSE", name: "Jet2 plc",           kind: "watchlist" }
 ];
 
-// Holdings with no chart tracking (per user request) — P&L only, kept static here.
+// Holdings with no chart tracking (per user request) — P&L only, kept static.
 const STATIC_HOLDINGS = [
   { symbol: "SOU", name: "Sound Energy",    shares: 141439, avgCostPence: 27.6219, bookCost: 39068.12, noChart: true },
   { symbol: "TRP", name: "Tower Resources", shares: 545,    avgCostPence: 419.4532, bookCost: 2286.02, noChart: true }
 ];
 
-async function fetchStooqCsv(stooqSymbol) {
-  const url = `https://stooq.com/q/d/l/?s=${stooqSymbol}&i=d`;
+async function fetchTwelveData(tdSymbol) {
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(tdSymbol)}&interval=1day&outputsize=300&apikey=${API_KEY}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Stooq fetch failed for ${stooqSymbol}: ${res.status}`);
-  const text = await res.text();
-  if (!text || text.startsWith("No data")) throw new Error(`Stooq returned no data for ${stooqSymbol}`);
-  return text;
-}
-
-function parseCsv(text) {
-  const lines = text.trim().split("\n");
-  const header = lines[0].split(",");
-  const rows = lines.slice(1).map(line => {
-    const cols = line.split(",");
-    const rec = {};
-    header.forEach((h, i) => (rec[h.trim()] = cols[i]));
-    return rec;
-  });
-  return rows
-    .map(r => ({
-      date: r.Date,
-      open: parseFloat(r.Open),
-      high: parseFloat(r.High),
-      low: parseFloat(r.Low),
-      close: parseFloat(r.Close),
-      volume: parseInt(r.Volume, 10)
+  const json = await res.json();
+  if (json.status === "error") {
+    throw new Error(`Twelve Data error for ${tdSymbol}: ${json.message || JSON.stringify(json)}`);
+  }
+  if (!json.values || !Array.isArray(json.values)) {
+    throw new Error(`Twelve Data returned no values for ${tdSymbol}: ${JSON.stringify(json)}`);
+  }
+  // Note: Twelve Data returns LSE prices in GBP (pounds), not pence — the
+  // rest of this dashboard works in pence throughout, so multiply by 100.
+  return json.values
+    .map(v => ({
+      date: v.datetime,
+      open: +(parseFloat(v.open) * 100).toFixed(4),
+      high: +(parseFloat(v.high) * 100).toFixed(4),
+      low: +(parseFloat(v.low) * 100).toFixed(4),
+      close: +(parseFloat(v.close) * 100).toFixed(4),
+      volume: parseInt(v.volume, 10) || 0
     }))
     .filter(r => r.date && !isNaN(r.close) && r.close > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function mergeSeries(existing, fresh) {
+  const byDate = new Map();
+  (existing || []).forEach(r => byDate.set(r.date, r));
+  fresh.forEach(r => byDate.set(r.date, r)); // fresh rows win on overlap (corrects any earlier bad data)
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
 // ---- Technical analysis (mirrors the dashboard's existing logic) ----
@@ -84,12 +97,12 @@ function ema(values, period) {
 function rsi(closes, period = 14) {
   const out = new Array(closes.length).fill(null);
   let gains = 0, losses = 0;
-  for (let i = 1; i <= period; i++) {
+  for (let i = 1; i <= period && i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
     if (diff >= 0) gains += diff; else losses -= diff;
   }
   let avgGain = gains / period, avgLoss = losses / period;
-  out[period] = 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss));
+  if (period < closes.length) out[period] = 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss));
   for (let i = period + 1; i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
     const gain = diff > 0 ? diff : 0;
@@ -236,25 +249,43 @@ function fullAnalysisFor(series) {
 }
 
 async function main() {
+  const fs = await import("node:fs/promises");
+
+  // Load whatever data.json already exists in the repo, so we merge into
+  // deep history rather than starting fresh with only 300 days each run.
+  let existingDataset = {};
+  try {
+    const prev = JSON.parse(await fs.readFile("data.json", "utf8"));
+    existingDataset = prev.dataset || {};
+  } catch {
+    console.log("No existing data.json found — starting fresh.");
+  }
+
   const dataset = {};
   const analysis = {};
   const fullAnalysis = {};
 
   for (const t of TICKERS) {
-    console.log(`Fetching ${t.symbol} (${t.stooq})...`);
-    const csv = await fetchStooqCsv(t.stooq);
-    const series = parseCsv(csv);
-    dataset[t.symbol] = series;
+    console.log(`Fetching ${t.symbol} (${t.td})...`);
+    const fresh = await fetchTwelveData(t.td);
+    const merged = mergeSeries(existingDataset[t.symbol], fresh);
+    dataset[t.symbol] = merged;
     analysis[t.symbol] = {
-      day: { trend: trendFromStructure(series, 10), volume: volumeAnalysis(series, 10) },
-      month: { trend: trendFromStructure(series, 22), volume: volumeAnalysis(series, 22) },
-      year: { trend: trendFromStructure(series, Math.min(252, series.length)), volume: volumeAnalysis(series, Math.min(252, series.length)) }
+      day: { trend: trendFromStructure(merged, 10), volume: volumeAnalysis(merged, 10) },
+      month: { trend: trendFromStructure(merged, 22), volume: volumeAnalysis(merged, 22) },
+      year: { trend: trendFromStructure(merged, Math.min(252, merged.length)), volume: volumeAnalysis(merged, Math.min(252, merged.length)) }
     };
     if (t.kind === "watchlist") {
-      analysis[t.symbol].supportResistance = supportResistance(series);
-      analysis[t.symbol].volatility = volatility(series);
-      fullAnalysis[t.symbol] = fullAnalysisFor(series);
+      analysis[t.symbol].supportResistance = supportResistance(merged);
+      analysis[t.symbol].volatility = volatility(merged);
+      fullAnalysis[t.symbol] = fullAnalysisFor(merged);
     }
+  }
+
+  // Carry over any tickers from the old data.json not refetched this run
+  // (defensive — keeps history if a ticker temporarily errors elsewhere).
+  for (const sym of Object.keys(existingDataset)) {
+    if (!dataset[sym]) dataset[sym] = existingDataset[sym];
   }
 
   const holdingsInput = TICKERS.filter(t => t.kind === "holding").map(t => ({
@@ -263,11 +294,9 @@ async function main() {
 
   const watchlistInput = TICKERS.filter(t => t.kind === "watchlist").map(t => ({ symbol: t.symbol, name: t.name }));
 
-  // Static book-cost-only holdings need a "last price" row so the dashboard can compute
-  // valuation/P&L without a chart. We keep their most recent known price as a flat series.
   for (const s of STATIC_HOLDINGS) {
     if (!dataset[s.symbol]) {
-      const flatPrice = (s.bookCost / s.shares) * 100 * 0.05; // placeholder floor if never updated
+      const flatPrice = (s.bookCost / s.shares) * 100;
       dataset[s.symbol] = [{ date: new Date().toISOString().slice(0, 10), open: flatPrice, high: flatPrice, low: flatPrice, close: flatPrice, volume: 0 }];
     }
   }
@@ -281,7 +310,6 @@ async function main() {
     fullAnalysis
   };
 
-  const fs = await import("node:fs/promises");
   await fs.writeFile("data.json", JSON.stringify(bundle));
   console.log("Wrote data.json —", Object.keys(dataset).map(k => `${k}:${dataset[k].length}`).join(", "));
 }
