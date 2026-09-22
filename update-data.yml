@@ -24,10 +24,15 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Fetch latest price data and rebuild data.json
+- name: DEBUG - check secret
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: node fetch-data.js
+        run: |
+          if [ -z "$TWELVEDATA_API_KEY" ]; then
+            echo "RESULT: variable is EMPTY or UNSET"
+          else
+            echo "RESULT: variable IS SET, length is ${#TWELVEDATA_API_KEY}"
+          fi
 
       - name: Commit updated data.json
         run: |
