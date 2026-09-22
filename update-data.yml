@@ -1,43 +1,13 @@
 name: Update Portfolio Data
 
-# Runs automatically once a day after LSE close, and can also be triggered
-# manually from the Actions tab (the "workflow_dispatch" line below).
 on:
-  schedule:
-    # 17:00 UTC = after 16:30 LSE close, before US close. Adjust the hour
-    # here if you want a different time (cron is in UTC, not London time).
-    - cron: "0 17 * * 1-5"
   workflow_dispatch: {}
-
-permissions:
-  contents: write
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-- name: DEBUG - check secret
+      - name: debug-secret-check
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: |
-          if [ -z "$TWELVEDATA_API_KEY" ]; then
-            echo "RESULT: variable is EMPTY or UNSET"
-          else
-            echo "RESULT: variable IS SET, length is ${#TWELVEDATA_API_KEY}"
-          fi
-
-      - name: Commit updated data.json
-        run: |
-          git config user.name "portfolio-tracker-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add data.json
-          git diff --quiet --cached || git commit -m "Daily data update: $(date -u +'%Y-%m-%d')"
-          git push
+        run: echo "LENGTH=${#TWELVEDATA_API_KEY}"
